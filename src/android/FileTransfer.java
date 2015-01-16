@@ -64,7 +64,7 @@ import org.json.JSONObject;
 import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
-import android.webkit.CookieManager;
+import org.xwalk.core.internal.XWalkCookieManager;
 
 public class FileTransfer extends CordovaPlugin {
 
@@ -81,6 +81,8 @@ public class FileTransfer extends CordovaPlugin {
 
     private static HashMap<String, RequestContext> activeRequests = new HashMap<String, RequestContext>();
     private static final int MAX_BUFFER_SIZE = 16 * 1024;
+
+    private XWalkCookieManager mCookieManager = null;
 
     private static final class RequestContext {
         String source;
@@ -171,6 +173,10 @@ public class FileTransfer extends CordovaPlugin {
         public long getTotalRawBytesRead() {
           return bytesRead;
         }
+    }
+
+    public FileTransfer() {
+        mCookieManager = new XWalkCookieManager();
     }
 
     @Override
@@ -316,7 +322,7 @@ public class FileTransfer extends CordovaPlugin {
                     conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + BOUNDARY);
 
                     // Set the cookies on the response
-                    String cookie = CookieManager.getInstance().getCookie(target);
+                    String cookie = mCookieManager.getCookie(target);
                     if (cookie != null) {
                         conn.setRequestProperty("Cookie", cookie);
                     }
@@ -781,7 +787,7 @@ public class FileTransfer extends CordovaPlugin {
                         connection.setRequestMethod("GET");
         
                         // TODO: Make OkHttp use this CookieManager by default.
-                        String cookie = CookieManager.getInstance().getCookie(sourceUri.toString());
+                        String cookie = mCookieManager.getCookie(sourceUri.toString());
                         if(cookie != null)
                         {
                             connection.setRequestProperty("cookie", cookie);
