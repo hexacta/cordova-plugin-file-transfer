@@ -19,10 +19,17 @@
 *
 */
 
+/*global exports, cordova, FileTransfer, FileTransferError,
+         FileUploadOptions, LocalFileSystem, requestFileSystem, TEMPORARY */
+
+/*global describe, it, expect, beforeEach, afterEach, spyOn,
+         jasmine, pending*/
+
 exports.defineAutoTests = function () {
 
     // constants
-    var GRACE_TIME_DELTA = 300 // in milliseconds
+    var GRACE_TIME_DELTA = 300; // in milliseconds
+    var DEFAULT_FILESYSTEM_SIZE = 1024*50; //filesystem size in bytes
     var UNKNOWN_HOST = "http://foobar.apache.org";
     var HEADERS_ECHO = "http://whatheaders.com"; // NOTE: this site is very useful!
 
@@ -33,13 +40,11 @@ exports.defineAutoTests = function () {
     var SERVER_WITH_CREDENTIALS = "http://cordova_user:cordova_password@cordova-filetransfer.jitsu.com";
 
     // flags
-    var isWindows = function() {
-        return (cordova.platformId == "windows") || (navigator.appVersion.indexOf("MSAppHost/1.0") !== -1);
-    };
+    var isWindows = cordova.platformId === 'windows8' || cordova.platformId === 'windows';
+    var isWP8 = cordova.platformId === 'windowsphone';
 
-    var isWP81 = function() {
-        return navigator.appVersion.indexOf("Windows Phone 8.1;") !== -1;
-    };
+    var isBrowser = cordova.platformId === 'browser';
+    var isIE = isBrowser && navigator.userAgent.indexOf('Trident') >= 0;
 
     describe('FileTransferError', function () {
 
@@ -126,7 +131,7 @@ exports.defineAutoTests = function () {
                 function (fileEntry) {
                     fileEntry.createWriter(function (writer) {
 
-                        writer.onwrite = function (evt) {
+                        writer.onwrite = function () {
                             console.log('created test file \'' + name + '\'');
                             success(fileEntry);
                         };
@@ -139,7 +144,14 @@ exports.defineAutoTests = function () {
                             throw new Error('aborted creating test file \'' + name + '\': ' + evt);
                         };
 
-                        writer.write(content + "\n");
+                        if (cordova.platformId === 'browser') {
+                            // var builder = new BlobBuilder();
+                            // builder.append(content + '\n');
+                            var blob = new Blob([content + '\n'], { type: 'text/plain' });
+                            writer.write(blob);
+                        } else {
+                            writer.write(content + "\n");
+                        }
 
                     }, unexpectedCallbacks.fileOperationFail);
                 },
@@ -149,6 +161,10 @@ exports.defineAutoTests = function () {
             );
         };
 
+        // according to documentation, wp8 does not support onProgress:
+        // https://github.com/apache/cordova-plugin-file-transfer/blob/master/doc/index.md#supported-platforms
+        var wp8OnProgressHandler = function () {};
+
         var defaultOnProgressHandler = function (event) {
             if (event.lengthComputable) {
                 expect(event.loaded).toBeGreaterThan(1);
@@ -156,7 +172,12 @@ exports.defineAutoTests = function () {
                 expect(event.total).not.toBeLessThan(event.loaded);
                 expect(event.lengthComputable).toBe(true, 'lengthComputable');
             } else {
-                expect(event.total).toBe(0);
+                // In IE, when lengthComputable === false, event.total somehow is equal to 2^64
+                if (isIE) {
+                    expect(event.total).toBe(Math.pow(2, 64));
+                } else {
+                    expect(event.total).toBe(0);
+                }
             }
         };
 
@@ -175,7 +196,7 @@ exports.defineAutoTests = function () {
         //      signifies a completed async call, each async call needs its own done(), and
         //      therefore its own beforeEach
         beforeEach(function (done) {
-            window.requestFileSystem(LocalFileSystem.PERSISTENT, 0,
+            window.requestFileSystem(LocalFileSystem.PERSISTENT, DEFAULT_FILESYSTEM_SIZE,
                 function (fileSystem) {
                     persistentRoot = fileSystem.root;
                     done();
@@ -187,7 +208,7 @@ exports.defineAutoTests = function () {
         });
 
         beforeEach(function (done) {
-            window.requestFileSystem(LocalFileSystem.TEMPORARY, 0,
+            window.requestFileSystem(LocalFileSystem.TEMPORARY, DEFAULT_FILESYSTEM_SIZE,
                 function (fileSystem) {
                     tempRoot = fileSystem.root;
                     done();
@@ -202,21 +223,27 @@ exports.defineAutoTests = function () {
         beforeEach(function() {
 
             // ignore the actual implementations of the unexpected callbacks
-            for (callback in unexpectedCallbacks) {
-                spyOn(unexpectedCallbacks, callback);
+            for (var callback in unexpectedCallbacks) {
+                if (unexpectedCallbacks.hasOwnProperty(callback)) {
+                    spyOn(unexpectedCallbacks, callback);
+                }
             }
 
             // but run the implementations of the expected callbacks
-            for (callback in expectedCallbacks) {
-                spyOn(expectedCallbacks, callback).and.callThrough();
+            for (callback in expectedCallbacks) { //jshint ignore: line
+                if (expectedCallbacks.hasOwnProperty(callback)) {
+                    spyOn(expectedCallbacks, callback).and.callThrough();
+                }
             }
         });
 
         // at the end, check that none of the unexpected callbacks got called,
         // and act on the expected callbacks
         afterEach(function() {
-            for (callback in unexpectedCallbacks) {
-                expect(unexpectedCallbacks[callback]).not.toHaveBeenCalled();
+            for (var callback in unexpectedCallbacks) {
+                if (unexpectedCallbacks.hasOwnProperty(callback)) {
+                    expect(unexpectedCallbacks[callback]).not.toHaveBeenCalled();
+                }
             }
 
             if (expectedCallbacks.unsupportedOperation.calls.any()) {
@@ -261,8 +288,8 @@ exports.defineAutoTests = function () {
 
                 transfer = new FileTransfer();
 
-                // assign a default onprogress handler
-                transfer.onprogress = defaultOnProgressHandler;
+                // assign onprogress handler
+                transfer.onprogress = isWP8 ? wp8OnProgressHandler : defaultOnProgressHandler;
 
                 // spy on the onprogress handler, but still call through to it
                 spyOn(transfer, 'onprogress').and.callThrough();
@@ -347,17 +374,15 @@ exports.defineAutoTests = function () {
                 it("filetransfer.spec.7 should download a file using file:// (when hosted from file://)", function (done) {
 
                     // for Windows platform it's ms-appdata:/// by default, not file://
-                    if (isWindows()) {
+                    if (isWindows) {
                         pending();
                         return;
                     }
 
                     var fileURL = window.location.protocol + '//' + window.location.pathname.replace(/ /g, '%20');
 
-                    if (!/^file/.exec(fileURL) && cordova.platformId !== 'blackberry10') {
-                        if (cordova.platformId !== 'windowsphone')
-                            expect(fileURL).toMatch(/^file:/);
-                        else
+                    if (!/^file:/.exec(fileURL) && cordova.platformId !== 'blackberry10') {
+                        if (cordova.platformId === 'windowsphone')
                             expect(fileURL).toMatch(/^x-wmapp0:/);
                         done();
                         return;
@@ -380,7 +405,7 @@ exports.defineAutoTests = function () {
                         var reader = new FileReader();
 
                         reader.onerror = unexpectedCallbacks.fileOperationFail;
-                        reader.onload  = function (e) {
+                        reader.onload  = function () {
                             expect(reader.result).toMatch(/The Apache Software Foundation/);
                             done();
                         };
@@ -506,20 +531,33 @@ exports.defineAutoTests = function () {
                     transfer.download(fileURL, localFilePath, unexpectedCallbacks.httpWin, downloadFail);
                 });
 
-                it("filetransfer.spec.15 should handle unknown host", function (done) {
+                describe('unknown host:', function () {
+                    var originalTimeout = jasmine.DEFAULT_TIMEOUT_INTERVAL;
 
-                    var fileURL = UNKNOWN_HOST;
+                    beforeEach(function() {
+                        jasmine.DEFAULT_TIMEOUT_INTERVAL = 30000;
+                    });
 
-                    var downloadFail = function (error) {
-                        expect(error.code).toBe(FileTransferError.CONNECTION_ERR);
-                        done();
-                    };
+                    afterEach(function() {
+                        jasmine.DEFAULT_TIMEOUT_INTERVAL = originalTimeout;
+                    });
 
-                    // turn off the onprogress handler
-                    transfer.onprogress = function () {};
+                    it("filetransfer.spec.15 should handle unknown host", function (done) {
 
-                    transfer.download(fileURL, localFilePath, unexpectedCallbacks.httpWin, downloadFail);
+                        var fileURL = UNKNOWN_HOST;
+
+                        var downloadFail = function (error) {
+                            expect(error.code).toBe(FileTransferError.CONNECTION_ERR);
+                            done();
+                        };
+
+                        // turn off the onprogress handler
+                        transfer.onprogress = function () {};
+
+                        transfer.download(fileURL, localFilePath, unexpectedCallbacks.httpWin, downloadFail);
+                    });                    
                 });
+                
 
                 it("filetransfer.spec.16 should handle bad file path", function (done) {
                     var fileURL = SERVER;
@@ -546,6 +584,11 @@ exports.defineAutoTests = function () {
 
                 it("filetransfer.spec.30 downloaded file entries should have a toNativeURL method", function (done) {
 
+                    if (cordova.platformId === 'browser') {
+                        pending();
+                        return;
+                    }
+
                     var fileURL = SERVER + "/robots.txt";
 
                     var downloadWin = function (entry) {
@@ -558,8 +601,10 @@ exports.defineAutoTests = function () {
                         expect(nativeURL).toBeTruthy();
                         expect(nativeURL).toEqual(jasmine.any(String));
 
-                        if (isWindows()) {
+                        if (isWindows) {
                             expect(nativeURL.substring(0, 14)).toBe('ms-appdata:///');
+                        } else if (isWP8) {
+                            expect(nativeURL.substring(0, 1)).toBe('/');
                         } else {
                             expect(nativeURL.substring(0, 7)).toBe('file://');
                         }
@@ -607,6 +652,7 @@ exports.defineAutoTests = function () {
                 var uploadOptions;
 
                 var fileName;
+                var fileContents;
                 var localFilePath;
 
                 // helpers
@@ -633,7 +679,7 @@ exports.defineAutoTests = function () {
                     fileName      = 'fileToUpload.txt';
                     fileContents  = 'upload test file';
 
-                    uploadParams        = new Object();
+                    uploadParams        = {};
                     uploadParams.value1 = "test";
                     uploadParams.value2 = "param";
 
@@ -646,7 +692,7 @@ exports.defineAutoTests = function () {
                     var fileWin = function (entry) {
                         localFilePath = entry.toURL();
                         done();
-                    }
+                    };
 
                     // create a file to upload
                     writeFile(root, fileName, fileContents, fileWin);
@@ -659,19 +705,13 @@ exports.defineAutoTests = function () {
 
                 it("filetransfer.spec.18 should be able to upload a file", function (done) {
 
-                    // according to spec "onprogress" method isn't supported on WP
-                    if (isWP81()) {
-                        pending();
-                        return;
-                    }
-
                     var fileURL = SERVER + '/upload';
 
                     var uploadWin = function (uploadResult) {
 
                         verifyUpload(uploadResult);
 
-                        if (cordova.platformId == 'ios') {
+                        if (cordova.platformId === 'ios') {
                             expect(uploadResult.headers).toBeDefined('Expected headers to be defined.');
                             expect(uploadResult.headers['Content-Type']).toBeDefined('Expected content-type header to be defined.');
                         }
@@ -684,12 +724,6 @@ exports.defineAutoTests = function () {
                 });
 
                 it("filetransfer.spec.19 should be able to upload a file with http basic auth", function (done) {
-
-                    // according to spec "onprogress" method doesn't supported on WP
-                    if (isWP81()) {
-                        pending();
-                        return;
-                    }
 
                     var fileURL = SERVER_WITH_CREDENTIALS + "/upload_basic_auth";
 
@@ -715,7 +749,7 @@ exports.defineAutoTests = function () {
                         setTimeout(done, GRACE_TIME_DELTA * 2);
                     };
 
-                    var fileWin = function (fileEntry) {
+                    var fileWin = function () {
 
                         startTime = +new Date();
 
@@ -871,7 +905,7 @@ exports.defineManualTests = function (contentEl, createActionButton) {
     var videoURL = "http://techslides.com/demos/sample-videos/small.mp4";
 
     function clearResults() {
-        results = document.getElementById("info");
+        var results = document.getElementById("info");
         results.innerHTML = '';
     }
 
@@ -882,8 +916,8 @@ exports.defineManualTests = function (contentEl, createActionButton) {
             var ft = new FileTransfer();
             console.log("Starting download");
             ft.download(source, fileSystem.root.toURL() + filename, function (entry) {
-                console.log("Download complete")
-                element.src = urlFn(entry)
+                console.log("Download complete");
+                element.src = urlFn(entry);
                 console.log("Src URL is " + element.src);
                 console.log("Inserting element");
                 document.getElementById("info").appendChild(element);
@@ -891,14 +925,14 @@ exports.defineManualTests = function (contentEl, createActionButton) {
         }
         console.log("Requesting filesystem");
         clearResults();
-        requestFileSystem(TEMPORARY, 0, function (fileSystem) {
+        window.requestFileSystem(LocalFileSystem.TEMPORARY, 0, function (fileSystem) {
             console.log("Checking for existing file");
-            if (directory != undefined) {
+            if (directory !== undefined) {
                 console.log("Checking for existing directory.");
                 fileSystem.root.getDirectory(directory, {}, function (dirEntry) {
                     dirEntry.removeRecursively(function () {
                         download(fileSystem);
-                    }, function (e) { console.log("ERROR: dirEntry.removeRecursively") });
+                    }, function () { console.log("ERROR: dirEntry.removeRecursively"); });
                 }, function () {
                     download(fileSystem);
                 });
@@ -907,12 +941,12 @@ exports.defineManualTests = function (contentEl, createActionButton) {
                     console.log("Removing existing file");
                     entry.remove(function () {
                         download(fileSystem);
-                    }, function (e) { console.log("ERROR: entry.remove"); });
+                    }, function () { console.log("ERROR: entry.remove"); });
                 }, function () {
                     download(fileSystem);
                 });
             }
-        }, function (e) { console.log("ERROR: requestFileSystem"); });
+        }, function () { console.log("ERROR: requestFileSystem"); });
     }
 
     /******************************************************************************/
@@ -935,11 +969,11 @@ exports.defineManualTests = function (contentEl, createActionButton) {
     }, 'cdv_image');
 
     createActionButton('Download and display img (native)', function () {
-        downloadImg(imageURL, function (entry) { return entry.toNativeURL(); }, new Image);
+        downloadImg(imageURL, function (entry) { return entry.toNativeURL(); }, new Image());
     }, 'native_image');
 
     createActionButton('Download to a non-existent dir (should work)', function () {
-        downloadImg(imageURL, function (entry) { return entry.toURL(); }, new Image, '/nonExistentDirTest/');
+        downloadImg(imageURL, function (entry) { return entry.toURL(); }, new Image(), '/nonExistentDirTest/');
     }, 'non-existent_dir');
 
     createActionButton('Download and play video (cdvfile)', function () {
@@ -951,6 +985,6 @@ exports.defineManualTests = function (contentEl, createActionButton) {
     createActionButton('Download and play video (native)', function () {
         var videoElement = document.createElement('video');
         videoElement.controls = "controls";
-        downloadImg(videoURL, function (entry) { return entry.toNativeURL(); }, videoElement)
+        downloadImg(videoURL, function (entry) { return entry.toNativeURL(); }, videoElement);
     }, 'native_video');
 };
